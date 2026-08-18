@@ -1,102 +1,163 @@
-Cloud SIEM Incident Response & Threat Simulation Lab
-Executive Summary & Core Objective
+# Wazuh + Suricata SOC Detection Lab
 
-The primary objective of this project is to simulate a realistic Incident Response (IR) and alert triage lifecycle for common cyber threat vectors. By standing up a controlled, cloud-hosted security lab combining a SIEM (Wazuh) and a Network Intrusion Detection System (Suricata) on AWS, this project focuses on capturing, triaging, investigating, and tuning detections for simulated real-world attacks such as brute-force authentication attempts and network intrusion indicators.
-1. Lab Architecture & Rapid Provisioning
+A self-built, cloud-hosted SIEM/IDS detection lab used to simulate real attack
+techniques and validate end-to-end detection, triage, and response, from
+infrastructure provisioning through alert generation and incident
+documentation.
 
-To ensure a repeatable, cost-effective testing ground, infrastructure deployment and teardown are fully automated via code.
+---
 
-    Infrastructure as Code (Terraform): Automatically provisions the AWS EC2 instance and injects configuration scripts to keep deployment fast and repeatable.
+## Objective
 
-    Component Version Pinning: Hardcodes specific package and dependency versions in user-data scripts to prevent breaking updates during automated provisioning.
+Build a functioning Security Operations Center (SOC) detection pipeline from
+the ground up: not just deploy a tool, but prove the ability to provision
+infrastructure, configure a SIEM and network IDS, generate realistic attack
+traffic, triage the resulting alerts, and document findings the way an
+analyst would in a real SOC. The goal was to demonstrate the full lifecycle:
+**infrastructure, detection, investigation, response, and lessons learned.**
 
-    SIEM & Monitoring Stack:
+---
 
-        Wazuh Manager & Dashboard: Deployed in Docker containers for centralized log management, health visualization, and Dev Tools access.
+## Architecture
 
-        Wazuh Agent: Native host agent monitoring system logs, authentication logs, and network telemetry.
+- **Cloud Provider:** AWS (EC2, provisioned via Terraform)
+- **SIEM:** Wazuh 4.8.2 (Docker Compose, single-node deployment)
+- **Network IDS:** Suricata (monitoring live traffic, feeding `eve.json` into Wazuh)
+- **Host OS:** Ubuntu 22.04
+- **IaC:** Terraform (`main.tf`, `variables.tf`, `outputs.tf`, `user_data.sh`)
 
-        Suricata: Configured to monitor network flows and output structured JSON alerts (eve.json) into the SIEM pipeline.
+![Wazuh Dashboard Overview](screenshots/01-dashboard-overview/Wazuh%20Dashboard.png)
 
-2. Simulated Threat Scenarios & Attack Vectors
+---
 
-Out-of-the-box cloud and SIEM defaults often suppress telemetry or block inbound test traffic. To effectively simulate common attacks, default restrictions were intentionally and safely tuned:
+## Repository Structure
 
-    SSH Brute-Forcing: Permitted controlled inbound SSH traffic to simulate multi-source authentication failure spikes, testing Wazuh's rule engine for brute-force detection thresholds.
+```
+├── main.tf / variables.tf / outputs.tf   # Terraform IaC for the EC2 host
+├── attack-simulations/                   # Repeatable bash scripts per incident
+├── incident-reports/                     # Filled-in SOC-style incident reports (PDF)
+├── screenshots/                          # Dashboard and alert evidence, organized per incident
+└── README.md
+```
 
-    Network Intrusion & Flow Suricata Alerts: Triggered network-based signature rules to evaluate how Suricata logs integrate with host-level SIEM alerts.
+---
 
-    Log Ingestion & System Anomaly Monitoring: Monitored critical system paths (/var/log/auth.log, /var/log/syslog, command execution outputs) to capture post-exploitation indicators or unauthorized changes.
+## Steps
 
-3. Incident Triage & Investigation Workflow
+### 1. Infrastructure Provisioning
+Provisioned the lab host on AWS EC2 using Terraform: instance sizing,
+security group rules (restricted SSH ingress), and a `user_data.sh` bootstrap
+script to install Docker and pull the Wazuh single-node Docker stack on
+first boot.
 
-Simulating an attack is only half the battle; the core of the project centers on how an analyst processes the resulting telemetry:
+### 2. SIEM & IDS Deployment
+Deployed Wazuh manager, indexer, and dashboard via Docker Compose. Installed
+and configured Suricata as a network IDS on the host, feeding parsed alerts
+(`eve.json`) into Wazuh as a monitored log source alongside standard system
+logs (`auth.log`, `syslog`).
 
-    Ingestion & Alert Triage: Reviewing incoming Wazuh rule alerts and sorting them by severity level to identify anomalous behavior.
+### 3. Agent Configuration & Tuning
+Enrolled the host as a Wazuh agent and iteratively corrected the agent
+configuration: fixing malformed XML, restoring a missing `<syscheck>`
+block, enabling real-time File Integrity Monitoring on user-facing
+directories, and tuning the local event buffer (`client_buffer`) to prevent
+event loss during high-volume bursts.
 
-    Contextual Cross-Referencing: Avoiding reaction to isolated alerts by manually checking raw logs (auth.log, syslog) to verify whether an event represents administrative maintenance, automated tooling, or malicious intent.
+### 4. Attack Simulation
+Executed four distinct, reproducible attack simulations against the lab
+environment, each scripted in `/attack-simulations` and mapped to a specific
+MITRE ATT&CK technique.
 
-    False Positive Filtering & Noise Reduction: Isolating baseline operational chatter from genuine Indicators of Compromise (IoCs).
+### 5. Detection, Triage & Documentation
+For each simulated attack, verified the alert in the Wazuh dashboard and raw
+alert log, investigated the supporting evidence, rendered a verdict
+(True Positive / False Positive), and documented the full incident using a
+consistent SOC-style report template (see `/incident-reports`).
 
-    Queue & Buffer Management: Handling event spikes and backlog congestion by adjusting agent queue parameters and utilizing Wazuh Dev Tools/API calls to clear stale states and prevent disk bloat.
+---
 
-4. Detection Engineering & Rule Tuning
+## Simulated Attacks & Detections
 
-Many common attacks slip past default rules because default security baselines are intentionally conservative. Remediation involved:
+| # | Attack | MITRE ATT&CK | Tactic | Detection Layer | Report |
+|---|--------|--------------|--------|------------------|--------|
+| 1 | SSH Brute Force (Hydra) | T1110 | Credential Access | Wazuh, SSH auth-failure rules | [SIM-001](incident-reports/SIM-001-brute-force.pdf) |
+| 2 | Unauthorized Sudo Attempt | T1548.003 | Privilege Escalation | Wazuh, sudo rule group | [SIM-002](incident-reports/SIM-002-unauthorized-sudo.pdf) |
+| 3 | Malicious File (EICAR) via FIM | T1204.002 | Execution | Wazuh, real-time FIM | [SIM-003](incident-reports/SIM-003-malicious-file-fim.pdf) |
+| 4 | Unauthorized Account + Group Creation | T1136.001 | Persistence | Wazuh, account/group creation rules | [SIM-004](incident-reports/SIM-004-persistence-account-creation.pdf) |
 
-    Threshold Tuning: Adjusting trigger counts for authentication failures to minimize alert latency.
+### Incident 1: SSH Brute Force
+![Brute Force Alert](screenshots/02-brute-force-alert/Wazuh%20Dashboard%20-%20Brute%20Force%20Alert%282%29.png)
 
-    Path Alignment: Ensuring custom log formats (like Suricata's JSON output) map cleanly to the SIEM parser.
+### Incident 2: Unauthorized Sudo Attempt
+![Sudo Alert](screenshots/03-sudo-alert/First%20Time%20Sudo%20User.png)
 
-    Overcoming Security Presets: Striking the right balance between hardened default security policies and open testing boundaries necessary to capture malicious signatures during simulation.
+### Incident 3: Malicious File / FIM Detection
+![FIM Alert](screenshots/04-fim-alert/Wazuh%20Dashoard%20-%20FIM%20Alert.png)
 
-5. Sample Incident Report: SSH Brute-Force Attack
+### Incident 4: Persistence via Account Creation
+![Persistence Alert](screenshots/05-persistence-alert/Wazuh%20Dashboard%20-%20Backdoor%20Creation%20Alert.png)
 
-    Incident ID: INC-SIM-01-SSH
+---
 
-    Attack Vector: Credential Brute-Forcing (SSH Service)
+## Alert Tuning
 
-    Detection Source: Wazuh Rule ID 5710 (Multiple authentication failures) + Suricata Flow Logs
+Beyond detection, this lab also involved hands-on rule tuning to manage
+noise and validate custom detection logic, including suppressing a
+high-frequency, low-value external scan rule and building a custom
+critical-severity test rule to validate the alerting pipeline end-to-end.
 
-    Severity: Medium / High
+![Alert Tuning](screenshots/Alert%20Tuning/Wazuh%20Alert%20Tuning%20%28Clear%20Queue%29.png)
 
-    Triage Analysis:
+---
 
-        Observation: A rapid surge of failed login attempts originated from an external testing source targeting port 22.
+## Lessons Learned
 
-        Verification: Cross-referenced with /var/log/auth.log to confirm repeated Invalid user and Failed password entries. System verification confirmed no successful login sessions were established.
+Several real, non-trivial troubleshooting findings came out of this build,
+documented here because working through them was as valuable as the
+detections themselves:
 
-    Remediation & Response:
+- **Default FIM paths don't cover common attack landing zones.** Wazuh's
+  default `syscheck` configuration does not monitor `/tmp` or user download
+  directories. Real-world payloads often land exactly there. Closing this
+  gap required explicitly adding monitored paths with real-time monitoring
+  enabled, rather than relying on the default 12-hour scheduled scan.
 
-        Verified firewall rule behavior to ensure dropping capabilities.
+- **TLS-encrypted traffic is a blind spot for network IDS without
+  interception.** Suricata could not inspect the contents of an HTTPS
+  download, since payload bytes are encrypted on the wire. This confirmed
+  that file-based detection (FIM), not network detection, was the correct
+  and necessary layer for catching a malicious file delivered over HTTPS.
 
-        Tuned authentication failure thresholds to ensure rapid alerting without triggering analyst fatigue from routine noise.
+- **A single malformed XML element can silently break the entire agent.**
+  An invalid `<client_buffer>` placement, and later a duplicated root
+  `<ossec_config>` element from a config rewrite, both caused the agent to
+  fail outright with minimal warning. Validating configuration with
+  `xmllint` before every restart became a standard part of the workflow.
 
+- **Wazuh does not alert on routine, authorized sudo usage by default,**
+  only failed/unauthorized attempts trigger a rule. This is sensible default
+  behavior (avoids alert fatigue on normal admin activity) but is worth
+  understanding explicitly rather than assuming all privileged actions are
+  logged as alerts.
 
-## Lessons Learned & Project Takeaways
+- **Self-initiated scans against your own host don't always trigger
+  network IDS signatures** the way external attacker traffic does. Many
+  Suricata scan signatures are threshold- or pattern-based and tuned for
+  real-world attacker behavior, not a handful of manually-run test
+  connections. Real, unsolicited scanning traffic from the public internet
+  was ultimately what confirmed the network-detection layer was working.
 
-1. **Explicit Component Version Matching in User Data**
-   Hardcoding explicit software and component versions within the cloud-init user data script prevents unexpected auto-upgrades or breaking dependency changes during automated node provisioning, ensuring a reproducible environment across rebuilds.
+---
 
-2. **Automated Infrastructure Provisioning via Terraform**
-   Integrating bootstrapping steps and configuration templates directly into Terraform user data dramatically streamlined the deployment and teardown lifecycle, minimizing manual SSH intervention and reducing cloud expenditure during testing.
+## Tech Stack
 
-3. **Queue Management & Alert Noise Suppression**
-   Managing backlog congestion required careful handling of agent event thresholds and queue configurations. Adjusting buffer sizes and utilizing Wazuh API/Dev Tools to purge stale states prevented disk bloat and streamlined alert visibility.
+`Terraform` `AWS EC2` `Docker / Docker Compose` `Wazuh 4.8.2` `Suricata` `Ubuntu 22.04` `Bash` `MITRE ATT&CK`
 
-4. **Overcoming Default Security Presets for Attack Simulation**
-   Default out-of-the-box Wazuh and platform policies are often too restrictive or suppress telemetry for common vector scenarios. Explicitly tuning rule levels, firewall allowances, and log ingestion paths (such as enabling granular auth tracking for SSH brute-forcing) was necessary to successfully capture and log basic simulated attack traffic.
+---
 
+## About This Project
 
-Conclusion & Investigation Methodology
-
-This project demonstrated that deploying a SIEM (Wazuh) alongside network monitoring (Suricata) in a cloud-hosted environment (AWS) provides comprehensive visibility into security events. However, a tool is only as effective as the analyst tuning it.
-Key Lessons Learned in Report Writing & Investigation
-
-    Contextualizing Raw Alerts (Investigation over Assumption): Raw alerts without system context lead to false conclusions. Every suspicious event—such as repeated authentication failures or unusual SUID binaries—must be cross-referenced with system logs (auth.log, syslog) to determine if it stems from routine administrative tasks, automated background jobs, or an actual compromise.
-
-    Rigorous False Positive Identification: Out-of-the-box SIEM rules often flag standard system processes or administrative administrative activity as threats. Analysts must document baseline behavior to isolate noise from signal, ensuring that legitimate operational traffic does not obscure real indicators of compromise (IoCs).
-
-    Targeted Rule Tuning: Merely capturing alerts is insufficient; analysts must actively refine detection logic. Tuning thresholds, suppressing chronic false positives, and writing custom rules for specific threat vectors (like brute-force thresholds or precise Suricata signatures) prevent alert fatigue and improve Mean Time to Detect (MTTD).
-
-    Actionable Reporting Structure: Effective incident reporting requires clear categorization—moving from executive summaries and technical timelines to specific remediation steps and rule adjustments. A strong report highlights not just what happened, but why the detection mechanism succeeded or failed and how to prevent future blind spots.
+Built as a hands-on portfolio project to demonstrate practical SOC analyst
+and detection engineering skills: infrastructure-as-code, SIEM
+configuration, log source integration, attack simulation, alert triage, and
+clear incident documentation.
